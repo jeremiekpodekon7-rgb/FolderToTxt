@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <domain-config>
+        <domain name="sharedpref" requireUserAction="false">
+            <path-list>
+                <path-element path="file"/>
+            </path-list>
+        </domain>
+    </domain-config>
+</data-extraction-rules>
