@@ -8,14 +8,16 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
-import android.provider.DocumentsContract
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.documentfile.provider.DocumentFile
 import java.io.File
+import java.io.InputStream
+import java.nio.charset.Charset
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -26,12 +28,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var convertButton: Button
 
     private var selectedFolderUri: Uri? = null
-    private var fileCount = 0
-    private var folderCount = 0
+    private var totalFiles = 0
+    private var totalFolders = 0
+    private var successFiles = 0
+    private var failedFiles = 0
 
     companion object {
         private const val PERMISSION_REQUEST = 100
         private const val FOLDER_PICKER_REQUEST = 101
+        private const val MAX_FILE_SIZE = 10 * 1024 * 1024 // 10 MB
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -94,20 +99,24 @@ class MainActivity : AppCompatActivity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == PERMISSION_REQUEST && grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            openFolderPicker()
-        } else {
-            Toast.makeText(this, "Permission refusée", Toast.LENGTH_SHORT).show()
+
+        if (requestCode == PERMISSION_REQUEST) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                openFolderPicker()
+            } else {
+                Toast.makeText(this, "Permission refusée", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+
         if (requestCode == FOLDER_PICKER_REQUEST && resultCode == Activity.RESULT_OK) {
             val uri = data?.data
             if (uri != null) {
+                val folderName = uri.lastPathSegment?.split(":")?.last() ?: "Dossier"
                 selectedFolderUri = uri
-                val folderName = uri.lastPathSegment?.split(":")?.last() ?: "Dossier sélectionné"
                 statusTextView.text = "Dossier sélectionné: $folderName"
                 convertButton.isEnabled = true
             }
@@ -115,12 +124,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun convertFolderToTxt() {
-        fileCount = 0
-        folderCount = 0
-        
+        totalFiles = 0
+        totalFolders = 0
+        successFiles = 0
+        failedFiles = 0
+
         Thread {
             try {
-                statusTextView.text = "Conversion en cours..."
+                runOnUiThread {
+                    statusTextView.text = "Conversion en cours...\nAnalyse des fichiers..."
+                }
+
+                val rootDocumentFile = DocumentFile.fromTreeUri(this, selectedFolderUri!!)
+                    ?: throw IllegalStateException("Impossible d'ouvrir le dossier sélectionné")
 
                 val outputDir = File(
                     Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
@@ -130,30 +146,51 @@ class MainActivity : AppCompatActivity() {
 
                 val outputFile = File(
                     outputDir,
-                    "convert_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())}.txt"
+                    "fusion_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())}.txt"
                 )
 
                 val builder = StringBuilder()
-                builder.append("Conversion du dossier en TXT - Tous les fichiers (sous-dossiers inclus)\n")
-                builder.append("Date: ${Date()}\n")
-                builder.append("===================================\n\n")
+                builder.append("╔════════════════════════════════════════════╗\n")
+                builder.append("║   RAPPORT DE CONVERSION DE DOSSIER EN TXT  ║\n")
+                builder.append("╚════════════════════════════════════════════╝\n\n")
+                builder.append("Mode: Tous les fichiers (tous les types)\n")
+                builder.append("Date de conversion: ${Date()}\n")
+                builder.append("Dossier source: ${rootDocumentFile.name}\n")
+                builder.append("====================================\n\n")
 
-                val treeUri = selectedFolderUri ?: return@Thread
-                val documentId = DocumentsContract.getTreeDocumentId(treeUri)
+                val files = mutableListOf<Triple<String, String, String>>()
+                scanRecursiveAllFiles(rootDocumentFile, "", files)
 
-                // Parcourir récursivement tous les dossiers
-                scanFolderRecursive(treeUri, documentId, "", builder)
+                if (files.isEmpty()) {
+                    builder.append("❌ Aucun fichier trouvé dans le dossier et ses sous-dossiers.\n")
+                } else {
+                    builder.append("✓ ${files.size} fichiers trouvés et convertis :\n\n")
+                    builder.append("====================================\n\n")
 
-                builder.append("\n\n===================================\n")
-                builder.append("Résumé de la conversion:\n")
-                builder.append("Fichiers trouvés: $fileCount\n")
-                builder.append("Dossiers parcourus: $folderCount\n")
-                builder.append("Date/Heure: ${Date()}\n")
+                    for ((relativePath, fileType, content) in files) {
+                        builder.append("═══════════════════════════════════════════\n")
+                        builder.append("FICHIER: $relativePath\n")
+                        builder.append("TYPE: $fileType\n")
+                        builder.append("═══════════════════════════════════════════\n")
+                        builder.append(content)
+                        builder.append("\n\n")
+                    }
+                }
 
-                outputFile.writeText(builder.toString())
+                builder.append("\n════════════════════════════════════════════\n")
+                builder.append("RÉSUMÉ FINAL:\n")
+                builder.append("════════════════════════════════════════════\n")
+                builder.append("Total fichiers traités: $totalFiles\n")
+                builder.append("Fichiers réussis: $successFiles\n")
+                builder.append("Fichiers échoués: $failedFiles\n")
+                builder.append("Dossiers parcourus: $totalFolders\n")
+                builder.append("Fichier final: ${outputFile.absolutePath}\n")
+                builder.append("Date/Heure finale: ${Date()}\n")
+
+                outputFile.writeText(builder.toString(), Charsets.UTF_8)
 
                 runOnUiThread {
-                    statusTextView.text = "✓ Conversion terminée!\n$fileCount fichiers convertis\n$folderCount dossiers parcourus"
+                    statusTextView.text = "✓ Conversion réussie !\n$successFiles/$totalFiles fichiers traités\n$totalFolders dossiers parcourus"
                     Toast.makeText(this, "Fichier créé: ${outputFile.absolutePath}", Toast.LENGTH_LONG).show()
                 }
 
@@ -166,57 +203,78 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    private fun scanFolderRecursive(treeUri: Uri, parentDocId: String, path: String, builder: StringBuilder) {
-        folderCount++
-        
-        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId)
+    private fun scanRecursiveAllFiles(folder: DocumentFile, currentPath: String, files: MutableList<Triple<String, String, String>>) {
+        if (folder.name == null) return
 
-        val cursor = contentResolver.query(
-            childrenUri,
-            arrayOf(
-                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                DocumentsContract.Document.COLUMN_MIME_TYPE
-            ),
-            null,
-            null,
-            null
-        )
+        totalFolders++
 
-        cursor?.use {
-            while (it.moveToNext()) {
-                val docId = it.getString(0)
-                val fileName = it.getString(1)
-                val mime = it.getString(2)
-                val childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+        val path = if (currentPath.isEmpty()) folder.name!! else "$currentPath/${folder.name}"
 
-                val currentPath = if (path.isEmpty()) fileName else "$path/$fileName"
+        val children = folder.listFiles()
 
-                // Si c'est un dossier, parcourir récursivement
-                if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
-                    builder.append("\n[DOSSIER] $currentPath\n")
-                    builder.append("---\n")
-                    scanFolderRecursive(treeUri, docId, currentPath, builder)
+        for (child in children) {
+            if (child.isDirectory) {
+                if (!child.name!!.startsWith(".")) {
+                    scanRecursiveAllFiles(child, path, files)
+                }
+            } else {
+                if (child.name == null) continue
+                if (child.name!!.startsWith(".")) continue
+
+                totalFiles++
+
+                val fileType = getFileType(child.name!!)
+                val content = readFileContent(child)
+
+                if (content != null) {
+                    files.add(Triple(path + "/" + child.name, fileType, content))
+                    successFiles++
                 } else {
-                    // Si c'est un fichier texte
-                    if (mime != null && (mime.startsWith("text/") || mime == "application/octet-stream")) {
-                        fileCount++
-                        builder.append("\n[FICHIER] $currentPath\n")
-                        builder.append("-----------------------------\n")
+                    failedFiles++
+                }
+            }
+        }
+    }
 
-                        try {
-                            contentResolver.openInputStream(childUri)?.use { input ->
-                                val content = input.bufferedReader().readText()
-                                builder.append(content)
-                            }
-                        } catch (e: Exception) {
-                            builder.append("[Erreur de lecture: ${e.message}]")
-                        }
+    private fun getFileType(filename: String): String {
+        val extension = filename.substringAfterLast(".", "")
+        return if (extension.isNotEmpty()) extension.uppercase() else "INCONNU"
+    }
 
-                        builder.append("\n")
+    private fun readFileContent(file: DocumentFile): String? {
+        return try {
+            val inputStream: InputStream? = contentResolver.openInputStream(file.uri)
+            if (inputStream == null) {
+                return "[Erreur: Impossible d'ouvrir le fichier]"
+            }
+
+            val fileSize = file.length()
+            if (fileSize > MAX_FILE_SIZE) {
+                return "[Fichier trop volumineux (${fileSize / 1024 / 1024} MB > 10 MB limit) - Contenu tronqué]"
+            }
+
+            val content = inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
+                try {
+                    reader.readText()
+                } catch (e: Exception) {
+                    inputStream.close()
+                    try {
+                        val inputStream2 = contentResolver.openInputStream(file.uri)
+                        inputStream2?.bufferedReader(Charset.defaultCharset()).use { it.readText() } ?: "[Impossible de décoder le fichier]"
+                    } catch (e2: Exception) {
+                        "[Erreur de décodage: ${e.message}]"
                     }
                 }
             }
+
+            if (content.isEmpty()) {
+                "[Fichier vide]"
+            } else {
+                content
+            }
+
+        } catch (e: Exception) {
+            "[Erreur de lecture: ${e.message}]"
         }
     }
 }
