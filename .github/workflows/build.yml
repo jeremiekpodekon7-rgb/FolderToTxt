@@ -1,10 +1,10 @@
-name: Build Signed APK
+name: Build Release APK
 
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -21,14 +21,15 @@ jobs:
           java-version: '17'
           cache: gradle
 
-      - name: Grant execute permission
-        run: chmod +x gradlew
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
 
-      - name: Build release signed APK
-        run: ./gradlew assembleRelease
+      - name: Build release APK
+        run: gradle assembleRelease
 
-      - name: Upload artifact
+      - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: signed-release-apk
+          name: release-apk
           path: app/build/outputs/apk/release/*.apk
+          retention-days: 30
